@@ -30,13 +30,13 @@ genData <- function(n,p,intervene=NULL) {
   return(ObsData)
 }
 
-run_analysis <- function(data,Lnodes,Cnodes,str_name,deterministic.g.function=NULL,abar=list(c(1,1),c(0,0))){
+run_analysis <- function(data,Lnodes,Cnodes,Ynodes=c("Y2","Y3"),str_name,deterministic.g.function=NULL,abar=list(c(1,1),c(0,0))){
   
   analysis <- ltmle(data,
                     Anodes=c("A1","A2"),
                     Lnodes=Lnodes,
                     Cnodes=Cnodes,
-                    Ynodes=c("Y2","Y3"),
+                    Ynodes=Ynodes,
                     abar= abar,
                     survivalOutcome=TRUE,
                     deterministic.g.function=deterministic.g.function)
