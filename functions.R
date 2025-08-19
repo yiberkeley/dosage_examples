@@ -1,3 +1,5 @@
+
+library(ltmle)
 genData <- function(n,p,intervene=NULL) {
   
   # exogenous variables
@@ -30,13 +32,13 @@ genData <- function(n,p,intervene=NULL) {
   return(ObsData)
 }
 
-run_analysis <- function(data,Lnodes,Cnodes,str_name,deterministic.g.function=NULL,abar=list(c(1,1),c(0,0))){
+run_analysis <- function(data,Lnodes,Cnodes,Ynodes=c("Y2","Y3"),str_name,deterministic.g.function=NULL,abar=list(c(1,1),c(0,0))){
   
   analysis <- ltmle(data,
                     Anodes=c("A1","A2"),
                     Lnodes=Lnodes,
                     Cnodes=Cnodes,
-                    Ynodes=c("Y2","Y3"),
+                    Ynodes=Ynodes,
                     abar= abar,
                     survivalOutcome=TRUE,
                     deterministic.g.function=deterministic.g.function)
@@ -52,3 +54,20 @@ run_analysis <- function(data,Lnodes,Cnodes,str_name,deterministic.g.function=NU
            analysis=(paste0("X.",str_name,".")))
   return(res.ate)
 }
+<<<<<<< HEAD
+
+
+#Example Usage
+data<-genData (n=1000,p=2,intervene=NULL) 
+result <- run_analysis(
+                 data = data,
+                 Lnodes = c("L1", "L2"),
+                 Cnodes = NULL,                   # Now properly specified
+                 str_name = "example_analysis",    # Must provide a name
+                 deterministic.g.function = NULL,
+                 abar = list(c(1,1), c(0,0))
+             )
+
+
+=======
+>>>>>>> 2dc73b5e1c5f5a02a3bf069a3aeb1cf45deb1aee

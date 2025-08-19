@@ -71,6 +71,59 @@ resultMSM <- ltmleMSM(data,
 (summary(resultMSM))
 
 
+
+##################################################
+####### stochatic/dynamic treatment based on propensity score
+##################################################
+#remove other Y node
+data <- data %>% select(-Y2)
+
+res1 <- ltmle(data,
+                  Anodes=c("A1","A2"),
+                  Lnodes=c('L1','L2'),
+                  Cnodes=NULL,
+                  Ynodes='Y3',
+                  abar= list(c(1,1),c(0,0)),
+                  survivalOutcome=F)
+
+cumgA1 <- as.matrix(res1$cum.g.unbounded[, , 1])
+table(cumgA1<0.05)
+##these are all common, so overwriting a few for the sake of the example
+cumgA1[2,1] <- 0.01
+cumgA1[3,1] <- 0.01
+table(cumgA1<0.05)
+
+#create abar matrices
+abarA1 <- matrix(rep(1,length=nrow(cumgA1)*ncol(cumgA1)),nrow=nrow(cumgA1),ncol=ncol(cumgA1))
+abarA0 <- matrix(rep(0,length=nrow(cumgA1)*ncol(cumgA1)),nrow=nrow(cumgA1),ncol=ncol(cumgA1))
+
+#overwrite abar matrix with natural value in cases where cumA1<0.05
+observedA <- as.matrix(data[,c('A1','A2')])
+table(observedA<0.05)
+abarA1[cumgA1<0.05] <- observedA[cumgA1<0.05]
+abarA0[cumgA1<0.05] <- observedA[cumgA1<0.05]
+
+#check
+observedA[2,]
+observedA[2,]
+cumgA1[2,]
+cumgA1[3,]
+abarA1[2,]
+abarA1[3,]
+
+##now run analysis with updated values
+res2 <- ltmle(data,
+              Anodes=c("A1","A2"),
+              Lnodes=c('L1','L2'),
+              Cnodes=NULL,
+              Ynodes='Y3',
+              abar= list(abarA1,abarA0),
+              survivalOutcome=F)
+
+summary(res2)
+#compare to pre:
+#summary(res1)
+
 ##################################################
 ####### WORKING MSM EXAMPLE: dose threshold theta
 ##################################################
