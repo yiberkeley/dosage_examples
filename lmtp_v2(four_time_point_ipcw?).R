@@ -167,10 +167,6 @@ mark_maya_shift <- function(data, trt) {
   data <- as.data.frame(data)
   n <- nrow(data)
   
-  # # Handle censoring nodes - always set to 1 (no censoring)
-  # if(grepl("^C", trt)) {
-  #   return(rep(1, n))
-  # }
   
   
   # Compute propensity scores for all treatment time points
