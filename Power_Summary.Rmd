@@ -1,0 +1,325 @@
+---
+title: "Power_Summary"
+output: html_document
+---
+
+#First, please RUN the:
+#
+#                        Coverage_Summary.Rmd 
+#
+#to laod the results and get the power plot functions
+```{r}
+
+# ============= POWER CALCULATION FUNCTION =============
+calculate_power_from_results <- function(sim_results) {
+  if(length(sim_results) == 0) {
+    cat("No results to calculate power\n")
+    return(NULL)
+  }
+  
+  # Get method names
+  method_names <- names(sim_results[[1]])
+  n_sims <- length(sim_results)
+  
+  # Extract CI bounds for all methods
+  ci_lowers_ic <- sapply(method_names, function(m) {
+    sapply(sim_results, function(s) s[[m]]$ci_lower_ic)
+  })
+  
+  ci_uppers_ic <- sapply(method_names, function(m) {
+    sapply(sim_results, function(s) s[[m]]$ci_upper_ic)
+  })
+  
+  ci_lowers_normal <- sapply(method_names, function(m) {
+    sapply(sim_results, function(s) s[[m]]$ci_lower_normal)
+  })
+  
+  ci_uppers_normal <- sapply(method_names, function(m) {
+    sapply(sim_results, function(s) s[[m]]$ci_upper_normal)
+  })
+  
+  ci_lowers_percentile <- sapply(method_names, function(m) {
+    sapply(sim_results, function(s) s[[m]]$ci_lower_percentile)
+  })
+  
+  ci_uppers_percentile <- sapply(method_names, function(m) {
+    sapply(sim_results, function(s) s[[m]]$ci_upper_percentile)
+  })
+  
+  # Calculate empirical SE for oracle
+  estimates <- sapply(method_names, function(m) {
+    sapply(sim_results, function(s) s[[m]]$estimate)
+  })
+  empirical_ses <- apply(estimates, 2, sd, na.rm = TRUE)
+  
+  # Initialize power dataframe
+  power_metrics <- data.frame(
+    Method = method_names,
+    Power_Oracle = NA,
+    Power_IC = NA,
+    Power_Normal = NA,
+    Power_Percentile = NA,
+    N_Valid = colSums(!is.na(estimates))
+  )
+  
+  # Calculate power for each CI type (proportion that excludes 0)
+  for(j in 1:length(method_names)) {
+    # Oracle CI power (using empirical SE)
+    valid_rows <- !is.na(estimates[, j])
+    if(sum(valid_rows) > 0 && !is.na(empirical_ses[j])) {
+      oracle_ci_lower <- estimates[valid_rows, j] - 1.96 * empirical_ses[j]
+      oracle_ci_upper <- estimates[valid_rows, j] + 1.96 * empirical_ses[j]
+      # Power = proportion where 0 is outside CI
+      power_oracle <- (oracle_ci_lower > 0) | (oracle_ci_upper < 0)
+      power_metrics$Power_Oracle[j] <- mean(power_oracle, na.rm = TRUE)
+    }
+    
+    # IC-based CI power
+    valid_rows_ic <- !is.na(ci_lowers_ic[, j]) & !is.na(ci_uppers_ic[, j])
+    if(sum(valid_rows_ic) > 0) {
+      power_ic <- (ci_lowers_ic[valid_rows_ic, j] > 0) | 
+        (ci_uppers_ic[valid_rows_ic, j] < 0)
+      power_metrics$Power_IC[j] <- mean(power_ic, na.rm = TRUE)
+    }
+    
+    # Normal approximation CI power
+    valid_rows_normal <- !is.na(ci_lowers_normal[, j]) & !is.na(ci_uppers_normal[, j])
+    if(sum(valid_rows_normal) > 0) {
+      power_normal <- (ci_lowers_normal[valid_rows_normal, j] > 0) | 
+        (ci_uppers_normal[valid_rows_normal, j] < 0)
+      power_metrics$Power_Normal[j] <- mean(power_normal, na.rm = TRUE)
+    }
+    
+    # Percentile CI power
+    valid_rows_percentile <- !is.na(ci_lowers_percentile[, j]) & !is.na(ci_uppers_percentile[, j])
+    if(sum(valid_rows_percentile) > 0) {
+      power_percentile <- (ci_lowers_percentile[valid_rows_percentile, j] > 0) | 
+        (ci_uppers_percentile[valid_rows_percentile, j] < 0)
+      power_metrics$Power_Percentile[j] <- mean(power_percentile, na.rm = TRUE)
+    }
+  }
+  
+  return(power_metrics)
+}
+
+# ============= POWER PLOTTING FUNCTION =============
+plot_power_comparison <- function(sim_results, full_summary,
+                                  method_types = c("MM", "Simple"),
+                                  ci_methods_to_show = c("Oracle", "IC", "Normal", "Percentile"),
+                                  alpha_offset = 0.0001,
+                                  point_size = 3,
+                                  line_size = 1.2) {
+  
+  # Calculate power
+  power_results <- calculate_power_from_results(sim_results)
+  
+  # Parse method information (same as coverage plot)
+  method_info <- data.frame(
+    Method = full_summary$Method,
+    Alpha = case_when(
+      full_summary$Method == "static" ~ 0,
+      grepl("_alpha_0$", full_summary$Method) ~ 0,
+      grepl("_alpha_", full_summary$Method) ~ 
+        as.numeric(str_extract(full_summary$Method, "(?<=_alpha_)[0-9.]+"))
+    ),
+    Method_Type = case_when(
+      full_summary$Method == "static" ~ "Static",
+      grepl("^mm_", full_summary$Method) ~ "MM",
+      grepl("^simple_", full_summary$Method) ~ "Simple",
+      TRUE ~ "Other"
+    )
+  )
+  
+  # Combine power results with method info
+  plot_data <- cbind(power_results, method_info[, c("Alpha", "Method_Type")])
+  plot_data <- plot_data %>%
+    filter(Method_Type %in% method_types)
+  
+  # Handle log scale
+  plot_data$Alpha_Plot <- ifelse(plot_data$Alpha == 0, alpha_offset, plot_data$Alpha)
+  
+  # Get unique alpha values
+  unique_alphas <- sort(unique(plot_data$Alpha_Plot))
+  
+  # Create adaptive breaks
+  x_breaks <- c(alpha_offset, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5)
+  x_breaks <- x_breaks[x_breaks >= min(unique_alphas) & x_breaks <= max(unique_alphas)]
+  
+  x_labels <- case_when(
+    x_breaks == alpha_offset ~ "0",
+    x_breaks < 0.01 ~ sprintf("%.3f", x_breaks),
+    x_breaks < 0.1 ~ sprintf("%.2f", x_breaks),
+    TRUE ~ sprintf("%.1f", x_breaks)
+  )
+  
+  # Prepare data for plotting
+  power_cols <- paste0("Power_", ci_methods_to_show)
+  power_long <- plot_data %>%
+    select(Method, Alpha_Plot, Method_Type, all_of(power_cols), N_Valid) %>%
+    pivot_longer(cols = all_of(power_cols),
+                 names_to = "CI_Method",
+                 values_to = "Power",
+                 names_prefix = "Power_")
+  
+  # Factor CI methods for consistent ordering
+  power_long$CI_Method <- factor(power_long$CI_Method, 
+                                 levels = ci_methods_to_show)
+  
+  # Color palette (same as coverage plot)
+  ci_colors <- c(
+    "Oracle" = "#0066CC",      # Professional blue
+    "IC" = "#DC3545",          # Alert red
+    "Normal" = "#28A745",      # Success green
+    "Percentile" = "#FD7E14"   # Warning orange
+  )
+  
+  # Create the plot
+  p <- ggplot(power_long, 
+              aes(x = Alpha_Plot, y = Power, 
+                  color = CI_Method, group = CI_Method)) +
+    
+    # Lines with different styles for each CI method
+    geom_line(aes(linetype = CI_Method),
+              size = line_size,
+              alpha = 0.8) +
+    
+    # Individual points without jitter
+    geom_point(size = point_size,
+               alpha = 0.8) +
+    
+    # Facet by method type
+    facet_wrap(~Method_Type, 
+               ncol = 2,
+               labeller = labeller(Method_Type = c(
+                 "MM" = "Mark Maya Intervention",
+                 "Simple" = "Simple Intervention"
+               ))) +
+    
+    # Logarithmic scale for x-axis
+    scale_x_log10(
+      breaks = x_breaks,
+      labels = x_labels,
+      name = expression(alpha ~ "parameter (log scale)"),
+      expand = expansion(mult = c(0.05, 0.05))
+    ) +
+    
+    # Y-axis for power with slightly larger upper limit
+    scale_y_continuous(
+      limits = c(0, 1.05),  # Increased from 1 to 1.05
+      breaks = seq(0, 1, 0.2),
+      labels = function(x) paste0(round(x * 100, 0), "%"),
+      name = "Statistical Power",
+      expand = expansion(mult = c(0.02, 0.02))
+    ) +
+    
+    # Color scale
+    scale_color_manual(values = ci_colors, name = "CI Method") +
+    
+    # Linetype mapping for distinction (matching coverage plot)
+    scale_linetype_manual(
+      values = c("Oracle" = "solid",
+                 "IC" = "dashed",
+                 "Normal" = "solid",
+                 "Percentile" = "dotdash"),
+      name = "CI Method"
+    ) +
+    
+    # Labels
+    labs(
+      title = "Statistical Power: Rejection Rate of Null Hypothesis (Effect = 0)",
+      subtitle = "Higher power indicates better ability to detect non-zero effects",
+      caption = paste0("Based on ", unique(power_long$N_Valid)[1], 
+                       " simulation runs per configuration")
+    ) +
+    
+    # Professional theme with horizontal legend on top
+    theme_minimal(base_size = 11) +
+    theme(
+      plot.title = element_text(size = 14, face = "bold", hjust = 0),
+      plot.subtitle = element_text(size = 11, color = "gray40", hjust = 0),
+      plot.caption = element_text(size = 9, color = "gray50", hjust = 1),
+      
+      strip.text = element_text(size = 11, face = "bold"),
+      strip.background = element_rect(fill = "gray96", color = NA),
+      
+      legend.position = "top",
+      legend.direction = "horizontal",
+      legend.box.background = element_rect(fill = "white", color = "gray90"),
+      legend.key.width = unit(1.5, "cm"),
+      legend.key = element_rect(fill = "white"),
+      legend.title = element_text(size = 10, face = "bold"),
+      legend.text = element_text(size = 9),
+      
+      panel.grid.minor = element_blank(),
+      panel.grid.major = element_line(color = "gray92", size = 0.3),
+      panel.border = element_rect(color = "gray80", fill = NA, size = 0.5),
+      
+      axis.text = element_text(size = 10, color = "gray20"),
+      axis.title = element_text(size = 11, face = "bold"),
+      axis.title.x = element_text(margin = margin(t = 10)),
+      axis.title.y = element_text(margin = margin(r = 10)),
+      
+      panel.spacing = unit(1.5, "lines")
+    )
+  
+  # Calculate summary statistics
+  power_summary <- power_long %>%
+    group_by(Method_Type, CI_Method) %>%
+    summarise(
+      Mean_Power = mean(Power, na.rm = TRUE),
+      SD_Power = sd(Power, na.rm = TRUE),
+      Min_Power = min(Power, na.rm = TRUE),
+      Max_Power = max(Power, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    arrange(Method_Type, desc(Mean_Power))
+  
+  return(list(plot = p, summary = power_summary))
+}
+# ============= CREATE COMBINED DASHBOARD =============
+create_combined_dashboard <- function(sim_results, full_summary,ci_methods_to_show = c("Oracle", "IC", "Normal", "Percentile")) {
+  # Get coverage plot
+  coverage_result <- plot_all_ci_coverage_enhanced(full_summary,ci_methods_to_show=ci_methods_to_show)
+  
+  # Get power plot
+  power_result <- plot_power_comparison(sim_results, full_summary,ci_methods_to_show=ci_methods_to_show)
+  
+  # Combine using patchwork if available
+  if (requireNamespace("patchwork", quietly = TRUE)) {
+    library(patchwork)
+    combined_plot <- coverage_result$plot / power_result$plot +
+      plot_layout(heights = c(1, 1)) +
+      plot_annotation(
+        title = "Coverage and Power Analysis of Confidence Interval Methods",
+        theme = theme(plot.title = element_text(size = 16, face = "bold", hjust = 0))
+      )
+  } else {
+    combined_plot <- list(
+      coverage = coverage_result$plot,
+      power = power_result$plot
+    )
+  }
+  
+  return(list(
+    plot = combined_plot,
+    coverage_summary = coverage_result$summary,
+    power_summary = power_result$summary
+  ))
+}
+```
+
+
+```{r}
+# ============= RUN THE ANALYSIS =============
+# Generate power plot
+power_result <- plot_power_comparison(sim_results, full_summary)
+print(power_result$plot)
+print(power_result$summary)
+
+# Or create combined dashboard
+# Set ci_methods_to_show = c("Oracle") for the power illustration on oracle coverage
+dashboard <- create_combined_dashboard(sim_results, full_summary,ci_methods_to_show = c("Oracle"))
+# dashboard <- create_combined_dashboard(sim_results, full_summary) 
+# View the combined plot
+dashboard$plot
+```

@@ -1,0 +1,678 @@
+---
+title: "Coverage_Summary"
+output: html_document
+---
+
+# Load Results
+```{r}
+#sim_results <- readRDS("~/Documents/GitHub/dosage_examples/tmle_ltmle_all_ci_methods_results_seed123.rds")
+
+sim_results <- readRDS("~/Documents/GitHub/dosage_examples/tmle_ltmle_all_ci_methods_results_seed0920_weak.rds")
+```
+
+## First, check the comprehensive summaries
+# ============= COMPREHENSIVE SUMMARY FUNCTION WITH ALL METRICS =============
+```{r}
+summarize_tmle_results <- function(sim_results) {
+  if(length(sim_results) == 0) {
+    cat("No results to summarize\n")
+    return(NULL)
+  }
+  
+  # Get method names
+  method_names <- names(sim_results[[1]])
+  n_sims <- length(sim_results)
+  
+  # Extract values into matrices
+  estimates <- sapply(method_names, function(m) {
+    sapply(sim_results, function(s) s[[m]]$estimate)
+  })
+  
+  truths <- sapply(method_names, function(m) {
+    sapply(sim_results, function(s) s[[m]]$truth)
+  })
+  
+  # Extract all CI types
+  ci_lowers_ic <- sapply(method_names, function(m) {
+    sapply(sim_results, function(s) s[[m]]$ci_lower_ic)
+  })
+  
+  ci_uppers_ic <- sapply(method_names, function(m) {
+    sapply(sim_results, function(s) s[[m]]$ci_upper_ic)
+  })
+  
+  ci_lowers_normal <- sapply(method_names, function(m) {
+    sapply(sim_results, function(s) s[[m]]$ci_lower_normal)
+  })
+  
+  ci_uppers_normal <- sapply(method_names, function(m) {
+    sapply(sim_results, function(s) s[[m]]$ci_upper_normal)
+  })
+  
+  ci_lowers_percentile <- sapply(method_names, function(m) {
+    sapply(sim_results, function(s) s[[m]]$ci_lower_percentile)
+  })
+  
+  ci_uppers_percentile <- sapply(method_names, function(m) {
+    sapply(sim_results, function(s) s[[m]]$ci_upper_percentile)
+  })
+  
+  # Extract both SE types
+  ses_ic <- sapply(method_names, function(m) {
+    sapply(sim_results, function(s) s[[m]]$se_ic)
+  })
+  
+  ses_boot <- sapply(method_names, function(m) {
+    sapply(sim_results, function(s) s[[m]]$se)
+  })
+  
+  # Calculate empirical SE for oracle
+  empirical_ses <- apply(estimates, 2, sd, na.rm = TRUE)
+  
+  # Initialize comprehensive metrics dataframe
+  metrics <- data.frame(
+    Method = method_names,
+    # Core estimation metrics
+    Mean_Estimate = colMeans(estimates, na.rm = TRUE),
+    Mean_Truth = colMeans(truths, na.rm = TRUE),
+    SD_Truth = apply(truths, 2, sd, na.rm = TRUE),
+    Bias = colMeans(estimates - truths, na.rm = TRUE),
+    Variance = apply(estimates, 2, var, na.rm = TRUE),
+    MSE = colMeans((estimates - truths)^2, na.rm = TRUE),
+    # Coverage for all CI types
+    Coverage_Oracle = NA,
+    Coverage_IC = NA,
+    Coverage_Normal = NA,
+    Coverage_Percentile = NA,
+    # Standard errors
+    Mean_SE_IC = colMeans(ses_ic, na.rm = TRUE),
+    Mean_SE_Boot = colMeans(ses_boot, na.rm = TRUE),
+    Empirical_SE = empirical_ses,
+    # SE ratios
+    SE_Ratio_IC_Emp = colMeans(ses_ic, na.rm = TRUE) / empirical_ses,
+    SE_Ratio_Boot_Emp = colMeans(ses_boot, na.rm = TRUE) / empirical_ses,
+    # CI widths
+    CI_Width_Oracle = 2 * 1.96 * empirical_ses,
+    CI_Width_IC = colMeans(ci_uppers_ic - ci_lowers_ic, na.rm = TRUE),
+    CI_Width_Normal = colMeans(ci_uppers_normal - ci_lowers_normal, na.rm = TRUE),
+    CI_Width_Percentile = colMeans(ci_uppers_percentile - ci_lowers_percentile, na.rm = TRUE),
+    # Width ratios relative to oracle
+    Width_Ratio_IC_Oracle = NA,
+    Width_Ratio_Normal_Oracle = NA,
+    Width_Ratio_Percentile_Oracle = NA,
+    # Number of valid simulations
+    N_Valid = colSums(!is.na(estimates))
+  )
+  
+  # Calculate width ratios
+  metrics$Width_Ratio_IC_Oracle <- metrics$CI_Width_IC / metrics$CI_Width_Oracle
+  metrics$Width_Ratio_Normal_Oracle <- metrics$CI_Width_Normal / metrics$CI_Width_Oracle
+  metrics$Width_Ratio_Percentile_Oracle <- metrics$CI_Width_Percentile / metrics$CI_Width_Oracle
+  
+  # Calculate coverage for all CI types
+  for(j in 1:length(method_names)) {
+    # Oracle CI coverage (using empirical SE)
+    valid_rows <- !is.na(estimates[, j]) & !is.na(truths[, j])
+    if(sum(valid_rows) > 0 && !is.na(empirical_ses[j])) {
+      oracle_ci_lower <- estimates[valid_rows, j] - 1.96 * empirical_ses[j]
+      oracle_ci_upper <- estimates[valid_rows, j] + 1.96 * empirical_ses[j]
+      coverage_indicators_oracle <- (oracle_ci_lower <= truths[valid_rows, j]) & 
+        (oracle_ci_upper >= truths[valid_rows, j])
+      metrics$Coverage_Oracle[j] <- mean(coverage_indicators_oracle)
+    }
+    
+    # IC-based CI coverage
+    valid_rows_ic <- !is.na(estimates[, j]) & !is.na(truths[, j]) & 
+      !is.na(ci_lowers_ic[, j]) & !is.na(ci_uppers_ic[, j])
+    if(sum(valid_rows_ic) > 0) {
+      coverage_indicators_ic <- (ci_lowers_ic[valid_rows_ic, j] <= truths[valid_rows_ic, j]) & 
+        (ci_uppers_ic[valid_rows_ic, j] >= truths[valid_rows_ic, j])
+      metrics$Coverage_IC[j] <- mean(coverage_indicators_ic)
+    }
+    
+    # Normal approximation CI coverage
+    valid_rows_normal <- !is.na(estimates[, j]) & !is.na(truths[, j]) & 
+      !is.na(ci_lowers_normal[, j]) & !is.na(ci_uppers_normal[, j])
+    if(sum(valid_rows_normal) > 0) {
+      coverage_indicators_normal <- (ci_lowers_normal[valid_rows_normal, j] <= truths[valid_rows_normal, j]) & 
+        (ci_uppers_normal[valid_rows_normal, j] >= truths[valid_rows_normal, j])
+      metrics$Coverage_Normal[j] <- mean(coverage_indicators_normal)
+    }
+    
+    # Percentile CI coverage
+    valid_rows_percentile <- !is.na(estimates[, j]) & !is.na(truths[, j]) & 
+      !is.na(ci_lowers_percentile[, j]) & !is.na(ci_uppers_percentile[, j])
+    if(sum(valid_rows_percentile) > 0) {
+      coverage_indicators_percentile <- (ci_lowers_percentile[valid_rows_percentile, j] <= truths[valid_rows_percentile, j]) & 
+        (ci_uppers_percentile[valid_rows_percentile, j] >= truths[valid_rows_percentile, j])
+      metrics$Coverage_Percentile[j] <- mean(coverage_indicators_percentile)
+    }
+  }
+  
+  return(metrics)
+}
+```
+
+
+# ============= Get all summaries =============
+```{r}
+full_summary<-summarize_tmle_results(sim_results) 
+print(full_summary)
+```
+
+
+## Second, Only look at the ones for the SE
+```{r}
+
+library(dplyr)
+colnames(full_summary)
+SE_estimation_summary<-full_summary%>%select(Mean_SE_IC,Mean_SE_Boot,Empirical_SE,Coverage_IC,Coverage_Normal,Coverage_Percentile)
+print(SE_estimation_summary)
+```
+
+## Third, do the coverage summaries
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(stringr)
+# library(scales)  # Optional, we use custom label functions
+# library(ggrepel)  # Optional, for label positioning
+
+# Helper function for percentage labels
+percent_label <- function(x) {
+  paste0(round(x * 100, 0), "%")
+}
+
+# ============= ENHANCED CI METHODS COMPARISON WITH BETTER AESTHETICS =============
+
+plot_all_ci_coverage_enhanced <- function(full_summary,
+                                          method_types = c("MM", "Simple"),
+                                          ci_methods_to_show = c("Oracle", "IC", "Normal", "Percentile"),
+                                          alpha_offset = 0.0001,
+                                          point_size = 3,
+                                          line_size = 1.2,
+                                          show_confidence_bands = FALSE) {
+  
+  # Parse method information
+  method_info <- data.frame(
+    Method = full_summary$Method,
+    Alpha = case_when(
+      full_summary$Method == "static" ~ 0,
+      grepl("_alpha_0$", full_summary$Method) ~ 0,
+      grepl("_alpha_", full_summary$Method) ~ 
+        as.numeric(str_extract(full_summary$Method, "(?<=_alpha_)[0-9.]+"))
+    ),
+    Method_Type = case_when(
+      full_summary$Method == "static" ~ "Static",
+      grepl("^mm_", full_summary$Method) ~ "MM",
+      grepl("^simple_", full_summary$Method) ~ "Simple",
+      TRUE ~ "Other"
+    )
+  )
+  
+  # Combine and filter data
+  plot_data <- cbind(full_summary, method_info[, c("Alpha", "Method_Type")])
+  plot_data <- plot_data %>%
+    filter(Method_Type %in% method_types)
+  
+  # Handle log scale
+  plot_data$Alpha_Plot <- ifelse(plot_data$Alpha == 0, alpha_offset, plot_data$Alpha)
+  
+  # Get unique alpha values
+  unique_alphas <- sort(unique(plot_data$Alpha_Plot))
+  
+  # Create adaptive breaks with better coverage
+  x_breaks <- c(alpha_offset, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5)
+  x_breaks <- x_breaks[x_breaks >= min(unique_alphas) & x_breaks <= max(unique_alphas)]
+  
+  # Create clean labels
+  x_labels <- case_when(
+    x_breaks == alpha_offset ~ "0",
+    x_breaks < 0.01 ~ sprintf("%.3f", x_breaks),
+    x_breaks < 0.1 ~ sprintf("%.2f", x_breaks),
+    TRUE ~ sprintf("%.1f", x_breaks)
+  )
+  
+  # Prepare data for plotting
+  coverage_cols <- paste0("Coverage_", ci_methods_to_show)
+  coverage_data <- plot_data %>%
+    select(Method, Alpha_Plot, Method_Type, all_of(coverage_cols), N_Valid) %>%
+    pivot_longer(cols = all_of(coverage_cols),
+                 names_to = "CI_Method",
+                 values_to = "Coverage",
+                 names_prefix = "Coverage_")
+  
+  # Factor CI methods for consistent ordering
+  coverage_data$CI_Method <- factor(coverage_data$CI_Method, 
+                                    levels = ci_methods_to_show)
+  
+  # Calculate confidence bands if multiple runs exist and requested
+  coverage_summary <- coverage_data %>%
+    group_by(Method_Type, CI_Method, Alpha_Plot) %>%
+    summarise(
+      Mean_Coverage = mean(Coverage, na.rm = TRUE),
+      SE_Coverage = sd(Coverage, na.rm = TRUE) / sqrt(n()),
+      Lower_CI = Mean_Coverage - 1.96 * SE_Coverage,
+      Upper_CI = Mean_Coverage + 1.96 * SE_Coverage,
+      N_Obs = n(),
+      .groups = "drop"
+    )
+  
+  # Professional color palette
+  ci_colors <- c(
+    "Oracle" = "#0066CC",      # Professional blue
+    "IC" = "#DC3545",          # Alert red
+    "Normal" = "#28A745",      # Success green
+    "Percentile" = "#FD7E14"   # Warning orange
+  )
+  
+  # Calculate the acceptable coverage region based on binomial confidence interval
+  # Using 0.95 ± 1.96*sqrt(0.95*0.05/nrep)
+  nrep <- unique(coverage_data$N_Valid)[1]
+  target_coverage <- 0.95
+  se_binomial <- sqrt(target_coverage * (1 - target_coverage) / nrep)
+  lower_bound <- target_coverage - 1.96 * se_binomial
+  upper_bound <- target_coverage + 1.96 * se_binomial
+  
+  # Create the main plot
+  p <- ggplot(coverage_data, 
+              aes(x = Alpha_Plot, y = Coverage, 
+                  color = CI_Method, group = CI_Method))
+  
+  # Add background shading for acceptable coverage region based on binomial CI
+  p <- p +
+    annotate("rect",
+             xmin = min(unique_alphas) * 0.9,
+             xmax = max(unique_alphas) * 1.1,
+             ymin = lower_bound, 
+             ymax = upper_bound,
+             fill = "green", alpha = 0.05)
+  
+  # Add confidence ribbons only if requested and multiple runs exist
+  if(show_confidence_bands && any(coverage_summary$N_Obs > 1)) {
+    p <- p + 
+      geom_ribbon(data = coverage_summary,
+                  aes(x = Alpha_Plot, ymin = Lower_CI, ymax = Upper_CI,
+                      fill = CI_Method, group = CI_Method),
+                  alpha = 0.15,
+                  color = NA)
+  }
+  
+  # Continue building the plot
+  p <- p +
+    
+    # Lines with different styles for each CI method
+    geom_line(aes(linetype = CI_Method),
+              size = line_size,
+              alpha = 0.8) +
+    
+    # Individual points without jitter
+    geom_point(size = point_size,
+               alpha = 0.8) +
+    
+    # 95% nominal coverage line (target)
+    geom_hline(yintercept = 0.95,
+               color = "gray30",
+               linetype = "dashed",
+               alpha = 0.7) +
+    
+    # Lower acceptable bound line
+    geom_hline(yintercept = lower_bound,
+               color = "gray50",
+               linetype = "dotted",
+               alpha = 0.5) +
+    
+    # Upper acceptable bound line
+    geom_hline(yintercept = upper_bound,
+               color = "gray50",
+               linetype = "dotted",
+               alpha = 0.5) +
+    
+    # Facet by method type
+    facet_wrap(~Method_Type, 
+               ncol = 2,
+               labeller = labeller(Method_Type = c(
+                 "MM" = "Mark Maya Intervention",
+                 "Simple" = "Simple Intervention"
+               ))) +
+    
+    # Logarithmic scale for x-axis
+    scale_x_log10(
+      breaks = x_breaks,
+      labels = x_labels,
+      name = expression(alpha ~ "parameter (log scale)"),
+      expand = expansion(mult = c(0.05, 0.05))
+    ) +
+    
+    # Y-axis with percentage labels
+    scale_y_continuous(
+      limits = c(0, 1),
+      breaks = seq(0, 1, 0.1),
+      labels = function(x) paste0(round(x * 100, 0), "%"),
+      name = "Coverage Probability",
+      expand = expansion(mult = c(0.02, 0.02))
+    ) +
+    
+    # Color scale
+    scale_color_manual(values = ci_colors, name = "CI Method") +
+    scale_fill_manual(values = ci_colors, name = "CI Method") +
+    
+    # Linetype mapping for distinction
+    scale_linetype_manual(
+      values = c("Oracle" = "solid",
+                 "IC" = "dashed",
+                 "Normal" = "solid",
+                 "Percentile" = "dotdash"),
+      name = "CI Method"
+    ) +
+    
+    # Enhanced title and labels
+    labs(
+      title = "Confidence Interval Coverage Performance Across Variance Estimation Methods",
+      subtitle = paste0("Target coverage: 95% (dashed line); Acceptable region: ",
+                        sprintf("%.1f%%", lower_bound * 100), "-",
+                        sprintf("%.1f%%", upper_bound * 100),
+                        " (95% binomial CI, shaded)"),
+      caption = paste0("Based on ", nrep, " simulation runs per configuration")
+    ) +
+    
+    # Clean professional theme
+    theme_minimal(base_size = 11) +
+    theme(
+      plot.title = element_text(size = 14, face = "bold", hjust = 0),
+      plot.subtitle = element_text(size = 11, color = "gray40", hjust = 0),
+      plot.caption = element_text(size = 9, color = "gray50", hjust = 1),
+      
+      strip.text = element_text(size = 11, face = "bold"),
+      strip.background = element_rect(fill = "gray96", color = NA),
+      
+      legend.position = "top",
+      legend.direction = "horizontal",
+      legend.background = element_rect(fill = "white", color = "gray90"),
+      legend.box.background = element_rect(fill = "white", color = "gray90"),
+      legend.key.width = unit(1.5, "cm"),
+      legend.key = element_rect(fill = "white"),
+      legend.title = element_text(size = 10, face = "bold"),
+      legend.text = element_text(size = 9),
+      
+      panel.grid.minor = element_blank(),
+      panel.grid.major = element_line(color = "gray92", size = 0.3),
+      panel.border = element_rect(color = "gray80", fill = NA, size = 0.5),
+      
+      axis.text = element_text(size = 10, color = "gray20"),
+      axis.title = element_text(size = 11, face = "bold"),
+      axis.title.x = element_text(margin = margin(t = 10)),
+      axis.title.y = element_text(margin = margin(r = 10)),
+      
+      panel.spacing = unit(1.5, "lines")
+    )
+  
+  # Add performance summary statistics
+  performance_summary <- coverage_data %>%
+    group_by(Method_Type, CI_Method) %>%
+    summarise(
+      Mean_Coverage = mean(Coverage, na.rm = TRUE),
+      SD_Coverage = sd(Coverage, na.rm = TRUE),
+      Coverage_Bias = mean(Coverage - 0.95, na.rm = TRUE),
+      RMSE = sqrt(mean((Coverage - 0.95)^2, na.rm = TRUE)),
+      .groups = "drop"
+    ) %>%
+    arrange(Method_Type, abs(Coverage_Bias))
+  
+  # Add the binomial CI bounds to the summary
+  performance_summary$Binomial_Lower <- lower_bound
+  performance_summary$Binomial_Upper <- upper_bound
+  performance_summary$Within_Bounds <- performance_summary$Mean_Coverage >= lower_bound & 
+                                       performance_summary$Mean_Coverage <= upper_bound
+  
+  return(list(plot = p, summary = performance_summary))
+}
+
+# Function for detailed comparison with statistical annotations
+plot_ci_methods_detailed <- function(full_summary,
+                                     method_type = "MM",
+                                     alpha_offset = 0.0001,
+                                     show_statistics = TRUE) {
+  
+  # Parse method information
+  method_info <- data.frame(
+    Method = full_summary$Method,
+    Alpha = case_when(
+      full_summary$Method == "static" ~ 0,
+      grepl("_alpha_0$", full_summary$Method) ~ 0,
+      grepl("_alpha_", full_summary$Method) ~ 
+        as.numeric(str_extract(full_summary$Method, "(?<=_alpha_)[0-9.]+"))
+    ),
+    Method_Type = case_when(
+      full_summary$Method == "static" ~ "Static",
+      grepl("^mm_", full_summary$Method) ~ "MM",
+      grepl("^simple_", full_summary$Method) ~ "Simple",
+      TRUE ~ "Other"
+    )
+  )
+  
+  plot_data <- cbind(full_summary, method_info[, c("Alpha", "Method_Type")])
+  plot_data <- plot_data %>%
+    filter(Method_Type == method_type)
+  
+  plot_data$Alpha_Plot <- ifelse(plot_data$Alpha == 0, alpha_offset, plot_data$Alpha)
+  
+  # Prepare long format data
+  coverage_long <- plot_data %>%
+    select(Alpha_Plot, starts_with("Coverage_")) %>%
+    pivot_longer(cols = starts_with("Coverage_"),
+                 names_to = "Method",
+                 values_to = "Coverage",
+                 names_prefix = "Coverage_")
+  
+  # Calculate performance metrics
+  performance <- coverage_long %>%
+    group_by(Method) %>%
+    summarise(
+      Mean = mean(Coverage, na.rm = TRUE),
+      Bias = mean(Coverage - 0.95, na.rm = TRUE),
+      RMSE = sqrt(mean((Coverage - 0.95)^2, na.rm = TRUE)),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      Label = sprintf("%s\nMean: %.1f%%\nBias: %+.1f%%",
+                      Method, Mean * 100, Bias * 100)
+    )
+  
+  # Define colors
+  method_colors <- c(
+    "Oracle" = "#0066CC",
+    "IC" = "#DC3545",
+    "Normal" = "#28A745",
+    "Percentile" = "#FD7E14"
+  )
+  
+  # Create plot
+  p <- ggplot(coverage_long, 
+              aes(x = Alpha_Plot, y = Coverage, 
+                  color = Method, group = Method)) +
+    
+    # Background shading for acceptable coverage region
+    annotate("rect",
+             xmin = min(plot_data$Alpha_Plot) * 0.9,
+             xmax = max(plot_data$Alpha_Plot) * 1.1,
+             ymin = 0.90, ymax = 1.00,
+             fill = "green", alpha = 0.05) +
+    
+    # Lines with different styles
+    geom_line(aes(linetype = Method),
+              size = 1.2,
+              alpha = 0.8) +
+    
+    # Points with jitter
+    geom_point(size = 3,
+               position = position_jitter(width = 0, height = 0.00),
+               alpha = 0.8) +
+    
+    # Nominal coverage line
+    geom_hline(yintercept = 0.95,
+               color = "gray30",
+               linetype = "dashed",
+               alpha = 0.7) +
+    
+    # 90% coverage line (lower bound)
+    geom_hline(yintercept = 0.90,
+               color = "gray50",
+               linetype = "dotted",
+               alpha = 0.5) +
+    
+    # Scales
+    scale_x_log10(
+      name = expression(alpha ~ "(log scale)"),
+      labels = function(x) ifelse(x == alpha_offset, "0", formatC(x, format = "g", digits = 2))
+    ) +
+    
+    scale_y_continuous(
+      name = "Coverage Probability",
+      limits = c(0, 1),
+      breaks = seq(0, 1, 0.1),
+      labels = percent_label,  # Use helper function
+      expand = expansion(mult = c(0.02, 0.02))
+    ) +
+    
+    scale_color_manual(values = method_colors) +
+    
+    scale_linetype_manual(
+      values = c("Oracle" = "solid",
+                 "IC" = "dashed",
+                 "Normal" = "solid",
+                 "Percentile" = "dotdash")
+    ) +
+    
+    # Labels and theme
+    labs(
+      title = paste0(method_type, " Method: Coverage Performance by CI Method"),
+      subtitle = "Target coverage: 95% (dashed line); Acceptable region: 90-100% (shaded)"
+    ) +
+    
+    theme_minimal(base_size = 11) +
+    theme(
+      plot.title = element_text(size = 14, face = "bold"),
+      plot.subtitle = element_text(size = 11, color = "gray40"),
+      
+      legend.position = "right",
+      legend.background = element_rect(fill = "white", color = "gray90"),
+      legend.key.width = unit(1.5, "cm"),
+      
+      panel.grid.minor = element_blank(),
+      panel.grid.major = element_line(color = "gray92"),
+      panel.border = element_rect(color = "gray80", fill = NA),
+      
+      axis.text = element_text(size = 10),
+      axis.title = element_text(size = 11, face = "bold")
+    )
+  
+  # Add statistical annotations if requested
+  if (show_statistics) {
+    # Find best performing method
+    best_method <- performance$Method[which.min(abs(performance$Bias))]
+    
+    # Add text annotations
+    p <- p +
+      annotate("text",
+               x = min(plot_data$Alpha_Plot) * 1.5,
+               y = 0.15,
+               label = paste("Best performer:", best_method,
+                             sprintf("\n(Bias: %+.1f%%)", 
+                                     performance$Bias[performance$Method == best_method] * 100)),
+               hjust = 0,
+               size = 3.5,
+               fontface = "bold",
+               color = method_colors[best_method])
+    
+    # Add performance table as annotation
+    perf_text <- performance %>%
+      mutate(Text = sprintf("%s: %.1f%% (±%.1f%%)",
+                            Method, Mean * 100, abs(Bias * 100))) %>%
+      pull(Text) %>%
+      paste(collapse = "\n")
+    
+    p <- p +
+      annotate("label",
+               x = max(plot_data$Alpha_Plot) * 0.3,
+               y = 0.15,
+               label = perf_text,
+               hjust = 0,
+               size = 3,
+               fill = "white",
+               color = "gray30",
+               label.padding = unit(0.5, "lines"))
+  }
+  
+  return(p)
+}
+
+# Utility function for geometric mean
+geometric_mean <- function(x) {
+  exp(mean(log(x[x > 0])))
+}
+
+# Create comprehensive summary dashboard
+create_coverage_dashboard <- function(full_summary) {
+  # Get both plots
+  result1 <- plot_all_ci_coverage_enhanced(full_summary)
+  result2_mm <- plot_ci_methods_detailed(full_summary, method_type = "MM")
+  result2_simple <- plot_ci_methods_detailed(full_summary, method_type = "Simple")
+  
+  # Combine plots using patchwork or gridExtra
+  if (requireNamespace("patchwork", quietly = TRUE)) {
+    library(patchwork)
+    combined_plot <- result1$plot / (result2_mm | result2_simple) +
+      plot_layout(heights = c(2, 1)) +
+      plot_annotation(
+        title = "Comprehensive CI Coverage Analysis",
+        theme = theme(plot.title = element_text(size = 16, face = "bold", hjust = 0))
+      )
+  } else if (requireNamespace("gridExtra", quietly = TRUE)) {
+    library(gridExtra)
+    combined_plot <- grid.arrange(
+      result1$plot,
+      result2_mm,
+      result2_simple,
+      ncol = 1,
+      heights = c(2, 1, 1)
+    )
+  } else {
+    combined_plot <- result1$plot
+  }
+  
+  return(list(
+    plot = combined_plot,
+    summary = result1$summary
+  ))
+}
+```
+
+
+```{r}
+
+# Basic enhanced plot
+result <- plot_all_ci_coverage_enhanced(full_summary)
+#Here, coverage bias and rmse is relative to the desired coverage 0.95
+print(result$summary)  # Performance statistics
+
+# Detailed plot for specific method type
+plot_mm <- plot_ci_methods_detailed(full_summary, 
+                                    method_type = "MM",
+                                    show_statistics = TRUE)
+
+plot_mm
+
+plot_simple <- plot_ci_methods_detailed(full_summary, 
+                                    method_type = "Simple",
+                                    show_statistics = TRUE)
+
+plot_simple
+```
+
+
+
+
+

@@ -1,0 +1,539 @@
+---
+title: "Point_Estimation_Summary"
+output: html_document
+---
+
+# Load Results
+```{r}
+#sim_results <- readRDS("~/Documents/GitHub/dosage_examples/tmle_ltmle_all_ci_methods_results_seed123.rds")
+
+sim_results <- readRDS("~/Documents/GitHub/dosage_examples/tmle_ltmle_all_ci_methods_results_seed0920_weak.rds")
+
+```
+
+## First, check the comprehensive summaries
+
+# ============= COMPREHENSIVE SUMMARY FUNCTION WITH ALL METRICS =============
+```{r}
+summarize_tmle_results <- function(sim_results) {
+  if(length(sim_results) == 0) {
+    cat("No results to summarize\n")
+    return(NULL)
+  }
+  
+  # Get method names
+  method_names <- names(sim_results[[1]])
+  n_sims <- length(sim_results)
+  
+  # Extract values into matrices
+  estimates <- sapply(method_names, function(m) {
+    sapply(sim_results, function(s) s[[m]]$estimate)
+  })
+  
+  truths <- sapply(method_names, function(m) {
+    sapply(sim_results, function(s) s[[m]]$truth)
+  })
+  
+  # Extract all CI types
+  ci_lowers_ic <- sapply(method_names, function(m) {
+    sapply(sim_results, function(s) s[[m]]$ci_lower_ic)
+  })
+  
+  ci_uppers_ic <- sapply(method_names, function(m) {
+    sapply(sim_results, function(s) s[[m]]$ci_upper_ic)
+  })
+  
+  ci_lowers_normal <- sapply(method_names, function(m) {
+    sapply(sim_results, function(s) s[[m]]$ci_lower_normal)
+  })
+  
+  ci_uppers_normal <- sapply(method_names, function(m) {
+    sapply(sim_results, function(s) s[[m]]$ci_upper_normal)
+  })
+  
+  ci_lowers_percentile <- sapply(method_names, function(m) {
+    sapply(sim_results, function(s) s[[m]]$ci_lower_percentile)
+  })
+  
+  ci_uppers_percentile <- sapply(method_names, function(m) {
+    sapply(sim_results, function(s) s[[m]]$ci_upper_percentile)
+  })
+  
+  # Extract both SE types
+  ses_ic <- sapply(method_names, function(m) {
+    sapply(sim_results, function(s) s[[m]]$se_ic)
+  })
+  
+  ses_boot <- sapply(method_names, function(m) {
+    sapply(sim_results, function(s) s[[m]]$se)
+  })
+  
+  # Calculate empirical SE for oracle
+  empirical_ses <- apply(estimates, 2, sd, na.rm = TRUE)
+  
+  # Initialize comprehensive metrics dataframe
+  metrics <- data.frame(
+    Method = method_names,
+    # Core estimation metrics
+    Mean_Estimate = colMeans(estimates, na.rm = TRUE),
+    Mean_Truth = colMeans(truths, na.rm = TRUE),
+    SD_Truth = apply(truths, 2, sd, na.rm = TRUE),
+    Bias = colMeans(estimates - truths, na.rm = TRUE),
+    Variance = apply(estimates, 2, var, na.rm = TRUE),
+    MSE = colMeans((estimates - truths)^2, na.rm = TRUE),
+    # Coverage for all CI types
+    Coverage_Oracle = NA,
+    Coverage_IC = NA,
+    Coverage_Normal = NA,
+    Coverage_Percentile = NA,
+    # Standard errors
+    Mean_SE_IC = colMeans(ses_ic, na.rm = TRUE),
+    Mean_SE_Boot = colMeans(ses_boot, na.rm = TRUE),
+    Empirical_SE = empirical_ses,
+    # SE ratios
+    SE_Ratio_IC_Emp = colMeans(ses_ic, na.rm = TRUE) / empirical_ses,
+    SE_Ratio_Boot_Emp = colMeans(ses_boot, na.rm = TRUE) / empirical_ses,
+    # CI widths
+    CI_Width_Oracle = 2 * 1.96 * empirical_ses,
+    CI_Width_IC = colMeans(ci_uppers_ic - ci_lowers_ic, na.rm = TRUE),
+    CI_Width_Normal = colMeans(ci_uppers_normal - ci_lowers_normal, na.rm = TRUE),
+    CI_Width_Percentile = colMeans(ci_uppers_percentile - ci_lowers_percentile, na.rm = TRUE),
+    # Width ratios relative to oracle
+    Width_Ratio_IC_Oracle = NA,
+    Width_Ratio_Normal_Oracle = NA,
+    Width_Ratio_Percentile_Oracle = NA,
+    # Number of valid simulations
+    N_Valid = colSums(!is.na(estimates))
+  )
+  
+  # Calculate width ratios
+  metrics$Width_Ratio_IC_Oracle <- metrics$CI_Width_IC / metrics$CI_Width_Oracle
+  metrics$Width_Ratio_Normal_Oracle <- metrics$CI_Width_Normal / metrics$CI_Width_Oracle
+  metrics$Width_Ratio_Percentile_Oracle <- metrics$CI_Width_Percentile / metrics$CI_Width_Oracle
+  
+  # Calculate coverage for all CI types
+  for(j in 1:length(method_names)) {
+    # Oracle CI coverage (using empirical SE)
+    valid_rows <- !is.na(estimates[, j]) & !is.na(truths[, j])
+    if(sum(valid_rows) > 0 && !is.na(empirical_ses[j])) {
+      oracle_ci_lower <- estimates[valid_rows, j] - 1.96 * empirical_ses[j]
+      oracle_ci_upper <- estimates[valid_rows, j] + 1.96 * empirical_ses[j]
+      coverage_indicators_oracle <- (oracle_ci_lower <= truths[valid_rows, j]) & 
+        (oracle_ci_upper >= truths[valid_rows, j])
+      metrics$Coverage_Oracle[j] <- mean(coverage_indicators_oracle)
+    }
+    
+    # IC-based CI coverage
+    valid_rows_ic <- !is.na(estimates[, j]) & !is.na(truths[, j]) & 
+      !is.na(ci_lowers_ic[, j]) & !is.na(ci_uppers_ic[, j])
+    if(sum(valid_rows_ic) > 0) {
+      coverage_indicators_ic <- (ci_lowers_ic[valid_rows_ic, j] <= truths[valid_rows_ic, j]) & 
+        (ci_uppers_ic[valid_rows_ic, j] >= truths[valid_rows_ic, j])
+      metrics$Coverage_IC[j] <- mean(coverage_indicators_ic)
+    }
+    
+    # Normal approximation CI coverage
+    valid_rows_normal <- !is.na(estimates[, j]) & !is.na(truths[, j]) & 
+      !is.na(ci_lowers_normal[, j]) & !is.na(ci_uppers_normal[, j])
+    if(sum(valid_rows_normal) > 0) {
+      coverage_indicators_normal <- (ci_lowers_normal[valid_rows_normal, j] <= truths[valid_rows_normal, j]) & 
+        (ci_uppers_normal[valid_rows_normal, j] >= truths[valid_rows_normal, j])
+      metrics$Coverage_Normal[j] <- mean(coverage_indicators_normal)
+    }
+    
+    # Percentile CI coverage
+    valid_rows_percentile <- !is.na(estimates[, j]) & !is.na(truths[, j]) & 
+      !is.na(ci_lowers_percentile[, j]) & !is.na(ci_uppers_percentile[, j])
+    if(sum(valid_rows_percentile) > 0) {
+      coverage_indicators_percentile <- (ci_lowers_percentile[valid_rows_percentile, j] <= truths[valid_rows_percentile, j]) & 
+        (ci_uppers_percentile[valid_rows_percentile, j] >= truths[valid_rows_percentile, j])
+      metrics$Coverage_Percentile[j] <- mean(coverage_indicators_percentile)
+    }
+  }
+  
+  return(metrics)
+}
+```
+
+# ============= Get all summaries =============
+```{r}
+full_summary<-summarize_tmle_results(sim_results) 
+print(full_summary)
+```
+
+
+## Second, Only look at the ones for the point estimation
+```{r}
+
+library(dplyr)
+colnames(full_summary)
+point_estimation_summary<-full_summary%>%select(Method,Mean_Estimate,Mean_Truth,SD_Truth,Bias,Empirical_SE,Variance,MSE,Coverage_Oracle,CI_Width_Oracle,N_Valid)
+print(point_estimation_summary)
+```
+
+
+## Third, make the visualize the difference betweem truth and estimates
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(stringr)
+
+# Fixed version that adapts to actual methods in data
+plot_tmle_jittered <- function(sim_results,
+                               title = "TMLE Results by Alpha Level",
+                               subtitle = "Estimates (solid) vs Truth (dashed) with 95% CI",
+                               y_label = "Estimate",
+                               include_static = TRUE,
+                               static_name = "static",
+                               alpha_offset = 0.0001,
+                               dodge_width = 0.08,
+                               estimate_size = 4,
+                               truth_size = 3,
+                               error_bar_width = 0.008) {
+  
+  if(length(sim_results) == 0) {
+    cat("No results to plot\n")
+    return(NULL)
+  }
+  
+  # Get method names
+  method_names <- names(sim_results[[1]])
+  
+  # Extract estimates and truths
+  estimates <- sapply(method_names, function(m) {
+    sapply(sim_results, function(s) s[[m]]$estimate)
+  })
+  
+  truths <- sapply(method_names, function(m) {
+    sapply(sim_results, function(s) s[[m]]$truth)
+  })
+  
+  # Calculate summary statistics
+  summary_data <- data.frame(
+    Method = method_names,
+    Mean_Estimate = colMeans(estimates, na.rm = TRUE),
+    Mean_Truth = colMeans(truths, na.rm = TRUE),
+    Empirical_SE = apply(estimates, 2, sd, na.rm = TRUE),
+    stringsAsFactors = FALSE
+  )
+  
+  # Calculate 95% CI
+  summary_data$CI_Lower <- summary_data$Mean_Estimate - 1.96 * summary_data$Empirical_SE
+  summary_data$CI_Upper <- summary_data$Mean_Estimate + 1.96 * summary_data$Empirical_SE
+  
+  # Parse method names
+  summary_data <- summary_data %>%
+    mutate(
+      Method_Type = case_when(
+        grepl("^tmle_ltmle_superlearner_alpha_", Method) ~ "TMLE SL",
+        grepl("^mm_alpha_", Method) ~ "MM",
+        grepl("^simple_alpha_", Method) ~ "Simple",
+        Method == static_name ~ "Static",
+        TRUE ~ "Other"
+      ),
+      Alpha = case_when(
+        Method == static_name ~ 0,
+        grepl("_alpha_", Method) ~ {
+          alpha_str <- str_extract(Method, "(?<=_alpha_)[0-9.]+|(?<=_alpha_)0$")
+          as.numeric(alpha_str)
+        },
+        TRUE ~ NA_real_
+      )
+    )
+  
+  # Handle alpha_0
+  summary_data$Alpha[grepl("_alpha_0$", summary_data$Method)] <- 0
+  
+  # Add offset for log scale
+  summary_data <- summary_data %>%
+    mutate(Alpha_plot = ifelse(Alpha == 0, alpha_offset, Alpha))
+  
+  # Filter and prepare data
+  plot_data <- summary_data %>%
+    filter(!is.na(Alpha)) %>%
+    filter(Method_Type != "Other")
+  
+  # Get unique method types actually in the data
+  unique_methods <- sort(unique(plot_data$Method_Type))
+  n_methods <- length(unique_methods)
+  
+  # Create dodge positions based on actual methods
+  dodge_positions <- seq(-dodge_width/2, dodge_width/2, length.out = n_methods)
+  names(dodge_positions) <- unique_methods
+  
+  # Add dodge positions to data
+  plot_data <- plot_data %>%
+    mutate(Alpha_dodged = Alpha_plot * exp(dodge_positions[as.character(Method_Type)]))
+  
+  # Create the plot
+  p <- ggplot(plot_data, aes(x = Alpha_dodged, color = Method_Type)) +
+    # Error bars for estimates
+    geom_errorbar(aes(ymin = CI_Lower, ymax = CI_Upper),
+                  width = error_bar_width,
+                  size = 0.7,
+                  alpha = 0.6) +
+    # Lines connecting estimates across alpha values
+    geom_line(aes(y = Mean_Estimate, group = Method_Type),
+              size = 0.8,
+              alpha = 0.7) +
+    # Lines connecting truths across alpha values (dashed)
+    geom_line(aes(y = Mean_Truth, group = Method_Type),
+              size = 0.6,
+              linetype = "dashed",
+              alpha = 0.5) +
+    # Estimate points (filled circles)
+    geom_point(aes(y = Mean_Estimate, fill = Method_Type),
+               shape = 21,
+               size = estimate_size,
+               stroke = 1,
+               color = "white") +
+    # Truth points (open circles) - SAME X POSITION as estimates
+    geom_point(aes(y = Mean_Truth),
+               shape = 21,
+               size = truth_size,
+               fill = "white",
+               stroke = 1.2) +
+    # Log scale
+    scale_x_log10(
+      breaks = c(alpha_offset, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5),
+      labels = c("0", "0.001", "0.002", "0.005", "0.01", "0.02", "0.05", "0.1", "0.2", "0.5")
+    ) +
+    # Color scales
+    scale_color_brewer(name = "Method", palette = "Dark2") +
+    scale_fill_brewer(name = "Method", palette = "Dark2") +
+    # Labels
+    labs(title = title,
+         subtitle = subtitle,
+         x = expression(alpha ~ "(log scale)"),
+         y = y_label) +
+    # Theme
+    theme_bw() +
+    theme(
+      legend.position = "right",
+      legend.background = element_rect(fill = "white", color = "gray80"),
+      legend.title = element_text(size = 11, face = "bold"),
+      plot.title = element_text(size = 14, face = "bold"),
+      plot.subtitle = element_text(size = 10, color = "gray50"),
+      panel.grid.minor = element_blank(),
+      axis.title = element_text(size = 11)
+    ) +
+    # Add annotation
+    annotate("text",
+             x = min(plot_data$Alpha_plot) * 1.5,
+             y = min(c(plot_data$CI_Lower, plot_data$Mean_Truth)) - 
+               0.03 * diff(range(c(plot_data$CI_Upper, plot_data$CI_Lower, plot_data$Mean_Truth))),
+             label = "Filled circles = estimates; Open circles = truth values",
+             size = 3,
+             color = "gray40",
+             fontface = "italic",
+             hjust = 0)
+  
+  return(p)
+}
+
+```
+
+
+```{r}
+# Usage:
+p1 <- plot_tmle_jittered(sim_results)
+p1
+```
+## Fourth, make visualization of the sampling distribution
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(stringr)
+
+# Violin plot with alpha value selection
+plot_sampling_violin <- function(sim_results,
+                                 alpha_values = NULL,  # e.g., c(0, 0.1, 0.01)
+                                 method_types = NULL,  # e.g., c("mm", "simple")
+                                 show_boxplot = TRUE,
+                                 show_mean_points = TRUE,
+                                 violin_alpha = 0.7,
+                                 ncol = 3,
+                                 common_scale = TRUE) {
+  
+  if(length(sim_results) == 0) {
+    cat("No results to plot\n")
+    return(NULL)
+  }
+  
+  # Get all method names
+  all_method_names <- names(sim_results[[1]])
+  
+  # Filter methods based on alpha values and method types
+  method_names <- all_method_names
+  
+  # Filter by alpha values if specified
+  if(!is.null(alpha_values)) {
+    # Create patterns to match
+    alpha_patterns <- paste0("_alpha_(", paste(alpha_values, collapse = "|"), ")$")
+    
+    # Handle alpha_0 specially
+    if(0 %in% alpha_values) {
+      alpha_patterns <- paste0("(_alpha_0$|", alpha_patterns, ")")
+    }
+    
+    # Also include static if alpha = 0 is requested
+    if(0 %in% alpha_values) {
+      method_names <- method_names[grepl(alpha_patterns, method_names) | method_names == "static"]
+    } else {
+      method_names <- method_names[grepl(alpha_patterns, method_names)]
+    }
+  }
+  
+  # Filter by method types if specified
+  if(!is.null(method_types)) {
+    type_patterns <- paste0("^(", paste(method_types, collapse = "|"), ")_alpha_")
+    method_names <- method_names[grepl(type_patterns, method_names) | method_names == "static"]
+  }
+  
+  if(length(method_names) == 0) {
+    cat("No methods match the specified criteria\n")
+    return(NULL)
+  }
+  
+  cat("Plotting methods:", paste(method_names, collapse = ", "), "\n")
+  
+  # Extract data for selected methods
+  all_data <- list()
+  
+  for(method in method_names) {
+    estimates <- sapply(sim_results, function(s) s[[method]]$estimate)
+    truths <- sapply(sim_results, function(s) s[[method]]$truth)
+    
+    # Parse method name to extract alpha value for labeling
+    alpha_val <- case_when(
+      method == "static" ~ 0,
+      grepl("_alpha_0$", method) ~ 0,
+      grepl("_alpha_", method) ~ as.numeric(str_extract(method, "(?<=_alpha_)[0-9.]+"))
+    )
+    
+    method_type <- case_when(
+      method == "static" ~ "Static",
+      grepl("^mm_", method) ~ "MM",
+      grepl("^simple_", method) ~ "Simple",
+      grepl("^tmle_ltmle_superlearner", method) ~ "TMLE SL",
+      TRUE ~ "Other"
+    )
+    
+    method_label <- paste0(method_type, " (α=", alpha_val, ")")
+    
+    method_data <- data.frame(
+      Method = method,
+      Method_Label = method_label,
+      Alpha = alpha_val,
+      Method_Type = method_type,
+      Estimate = estimates,
+      Truth = truths,
+      stringsAsFactors = FALSE
+    )
+    
+    all_data[[method]] <- method_data
+  }
+  
+  # Combine and reshape
+  plot_data <- bind_rows(all_data) %>%
+    pivot_longer(cols = c(Estimate, Truth),
+                 names_to = "Type",
+                 values_to = "Value") %>%
+    filter(!is.na(Value))
+  
+  # Order methods by alpha value and type for better visualization
+  plot_data <- plot_data %>%
+    mutate(Method_Label = factor(Method_Label, 
+                                 levels = unique(Method_Label[order(Alpha, Method_Type)])))
+  
+  # Calculate y-axis limits if using common scale
+  if(common_scale) {
+    y_min <- min(plot_data$Value, na.rm = TRUE)
+    y_max <- max(plot_data$Value, na.rm = TRUE)
+    y_range <- y_max - y_min
+    y_limits <- c(y_min - 0.05 * y_range, y_max + 0.05 * y_range)
+  } else {
+    y_limits <- NULL
+  }
+  
+  # Calculate means
+  mean_data <- plot_data %>%
+    group_by(Method_Label, Type) %>%
+    summarise(
+      Mean = mean(Value, na.rm = TRUE),
+      SD = sd(Value, na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  # Create violin plot
+  p <- ggplot(plot_data, aes(x = Type, y = Value, fill = Type)) +
+    geom_violin(alpha = violin_alpha, 
+                scale = "width",
+                trim = FALSE)
+  
+  # Add boxplot if requested
+  if(show_boxplot) {
+    p <- p + 
+      geom_boxplot(width = 0.1, 
+                   alpha = 0.5, 
+                   outlier.size = 1,
+                   outlier.alpha = 0.5,
+                   show.legend = FALSE)
+  }
+  
+  # Add mean points if requested
+  if(show_mean_points) {
+    p <- p +
+      geom_point(data = mean_data,
+                 aes(x = Type, y = Mean),
+                 size = 3,
+                 shape = 23,
+                 fill = "white",
+                 color = "black",
+                 stroke = 1.5)
+  }
+  
+  # Apply faceting and scales
+  p <- p +
+    facet_wrap(~Method_Label, ncol = ncol, scales = if(common_scale) "fixed" else "free_y")
+  
+  # Set y-limits if using common scale
+  if(!is.null(y_limits)) {
+    p <- p + scale_y_continuous(limits = y_limits)
+  }
+  
+  # Styling
+  p <- p +
+    scale_fill_manual(values = c("Estimate" = "steelblue", "Truth" = "darkred")) +
+    labs(title = "Sampling Distributions for Selected Alpha Values",
+         subtitle = if(common_scale) 
+           sprintf("Common scale: [%.3f, %.3f]", y_limits[1], y_limits[2]) 
+         else "Free scales",
+         x = "",
+         y = "Value") +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size = 14, face = "bold"),
+      plot.subtitle = element_text(size = 10, color = "gray40"),
+      strip.text = element_text(size = 10, face = "bold"),
+      strip.background = element_rect(fill = "gray95", color = NA),
+      legend.position = "top",
+      legend.title = element_blank(),
+      axis.text.x = element_text(size = 10, angle = 45, hjust = 1),
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor = element_blank()
+    )
+  
+  return(p)
+}
+```
+
+```{r}
+# Plot only selected alpha 
+sim_results<-tmle_ltmle_all_ci_methods_results_seed_beta
+p2 <- plot_sampling_violin(sim_results,
+                          alpha_values=c(0,0.01,0.05,0.4,1)) # if want specific, alpha_values=c(0,0.01)
+print(p2)
+```

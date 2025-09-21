@@ -1,0 +1,715 @@
+---
+title: "TMLE Simulation Results Report"
+author: "Analysis Report"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    df_print: paged
+    code_folding: hide
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    fig_caption: true
+    latex_engine: xelatex
+subtitle: "Longitudinal Modified Treatment Policies with SuperLearner"
+header-includes:
+- \usepackage{amsmath}
+- \usepackage{amssymb}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 6,
+  fig.align = 'center',
+  results = 'asis'
+)
+```
+
+# Executive Summary
+
+This report analyzes the performance of Targeted Maximum Likelihood Estimation (TMLE) for longitudinal modified treatment policies using the ltmle package with SuperLearner for propensity score estimation.
+
+```{r load-libraries}
+# Load required libraries
+suppressPackageStartupMessages({
+  library(ggplot2)
+  library(dplyr)
+  library(tidyr)
+  library(knitr)
+  library(kableExtra)
+  library(gridExtra)
+  library(scales)
+})
+
+# Set theme for all plots
+theme_set(theme_minimal(base_size = 11))
+```
+
+# Performance Metrics Definitions
+
+Before presenting the results, we define the key performance metrics used in this analysis:
+
+## Mathematical Definitions
+
+### Bias
+The bias measures the systematic deviation of the estimator from the true value:
+$\text{Bias}(\hat{\psi}^d) = E[\hat{\psi}^d] - \psi_0^d \approx \frac{1}{B} \sum_{b=1}^{B} (\hat{\psi}_b^d - \psi_{0,b}^d)$
+where $B$ is the number of simulation replications, $\hat{\psi}_b^d$ is the estimate from simulation $b$, and $\psi_{0,b}^d$ is the true value.
+
+### Mean Squared Error (MSE)
+MSE combines both bias and variance to measure overall accuracy:
+$\text{MSE}(\hat{\psi}^d) = E[(\hat{\psi}^d - \psi_0^d)^2] \approx \frac{1}{B} \sum_{b=1}^{B} (\hat{\psi}_b^d - \psi_{0,b}^d)^2$
+
+### Coverage Probability
+Coverage measures how often the confidence interval contains the true value:
+$\text{Coverage}(\hat{\psi}^d) = P(\psi_0^d \in CI) \approx \frac{1}{B} \sum_{b=1}^{B} \mathbb{I}(\psi_{0,b}^d \in CI_b)$
+where $CI_b$ is the 95% confidence interval from simulation $b$. The nominal level is 0.95.
+
+### Standard Error Ratio
+The SE ratio assesses the accuracy of variance estimation:
+$\text{SE Ratio} = \frac{\overline{SE}_{IC}}{SE_{emp}} = \frac{\text{Mean IC-based SE}}{\text{Empirical SE}}$
+where:
+- $\overline{SE}_{IC} = \frac{1}{B} \sum_{b=1}^{B} \widehat{SE}_b$ (mean of influence curve-based standard errors)
+- $SE_{emp} = \sqrt{\frac{1}{B-1} \sum_{b=1}^{B} (\hat{\psi}_b^d - \bar{\psi}^d)^2}$ (empirical standard deviation)
+
+A ratio close to 1.0 indicates accurate variance estimation.
+
+### Confidence Interval Width
+The average width of the 95% confidence intervals:
+$\overline{\text{Width}} = \frac{1}{B} \sum_{b=1}^{B} (\text{Upper}_b - \text{Lower}_b) = \frac{1}{B} \sum_{b=1}^{B} 2 \times 1.96 \times \widehat{SE}_b$
+
+## Modified Treatment Policies
+
+### Static Intervention
+All units receive treatment at all time points:
+$d^{\text{static}}(a_t, h_t) = 1 \quad \forall t, a_t, h_t$
+
+### Simple Cumulative Shift
+Intervention based on cumulative propensity product:
+$d^{\text{simple}}_\alpha(a_t, h_t) = \begin{cases}
+1 & \text{if } \prod_{s=1}^{t} g_s(1|h_s) > \alpha \\
+a_t & \text{otherwise}
+\end{cases}$
+where $g_s(1|h_s)$ is the propensity score at time $s$ and $\alpha$ is the threshold parameter.
+
+### Mark-Maya Sequential Shift
+Modified threshold rule with historical consideration that maintains a "sticky" cumulative product:
+$d^{\text{MM}}_\alpha(a_t, h_t) = \begin{cases}
+1 & \text{if } g_t(1|h_t) \cdot \tilde{G}_{t-1} > \alpha \\
+a_t & \text{otherwise}
+\end{cases}$
+where $\tilde{G}_{t-1}$ is a modified cumulative product that only updates when the threshold is exceeded.
+
+### Understanding the Threshold Parameter α
+The threshold parameter α controls the intensity of the intervention:
+- **α → 0**: Nearly all units with positive propensity receive treatment (aggressive intervention)
+- **α = 0.01**: Units with cumulative propensity > 1% receive treatment 
+- **α = 0.05**: Units with cumulative propensity > 5% receive treatment (moderate intervention)
+- **α = 1**: No intervention (natural treatment allocation)
+
+Lower α values lead to more units being intervened upon, resulting in treatment effect estimates closer to the static intervention.
+
+# Data Import and Processing
+
+```{r import-data}
+# Import simulation results
+results <- read.csv('tmle_ltmle_superlearner_summary_GLMONLY.csv')
+
+# Process the data: extract policy type and alpha values
+results <- results %>%
+  mutate(
+    Policy = case_when(
+      grepl("^static", Method) ~ "Static",
+      grepl("^simple", Method) ~ "Simple Shift",
+      grepl("^mm", Method) ~ "Mark-Maya",
+      TRUE ~ "Unknown"
+    ),
+    Alpha = case_when(
+      Method == "static" ~ NA_real_,
+      TRUE ~ as.numeric(gsub(".*alpha_", "", Method))
+    )
+  )
+
+# Create shift_results by filtering out static policy
+shift_results <- results %>% 
+  filter(Policy != "Static" & !is.na(Alpha))
+
+# Display summary statistics
+summary_stats <- results %>%
+  group_by(Policy) %>%
+  summarise(
+    `Mean Bias` = mean(abs(Bias), na.rm = TRUE),
+    `Mean MSE` = mean(MSE, na.rm = TRUE),
+    `Mean Coverage` = mean(Coverage, na.rm = TRUE),
+    `Mean SE Ratio` = mean(Mean_SE/Empirical_SE, na.rm = TRUE),
+    .groups = 'drop'
+  )
+
+kable(summary_stats, 
+      digits = 3,
+      caption = "Summary Statistics by Policy Type",
+      format = "html") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+## Complete Results Table
+
+```{r results-table}
+# Display complete results
+results_display <- results %>%
+  select(Method, Mean_Estimate, Mean_Truth, Bias, MSE, Coverage, 
+         Mean_SE, Empirical_SE, CI_Width, N_Valid) %>%
+  mutate(
+    SE_Ratio = Mean_SE/Empirical_SE
+  )
+
+kable(results_display,
+      digits = 3,
+      caption = "Complete TMLE Simulation Results",
+      format = "html") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                font_size = 10) %>%
+  scroll_box(height = "400px")
+```
+
+# Static Intervention Analysis
+
+```{r static-analysis}
+static_results <- results %>%
+  filter(Policy == "Static")
+
+if(nrow(static_results) > 0) {
+  static_display <- static_results %>%
+    select(Method, Mean_Estimate, Mean_Truth, Bias, MSE, Coverage, Mean_SE, Empirical_SE) %>%
+    mutate(SE_Ratio = Mean_SE/Empirical_SE)
+  
+  kable(static_display,
+        digits = 3,
+        caption = "Static Intervention Results",
+        format = "html") %>%
+    kable_styling(bootstrap_options = c("striped", "hover"))
+} else {
+  cat("No static intervention results available.\n")
+}
+```
+
+# Shift Intervention Analysis
+
+## True Parameter Values Across Thresholds
+
+```{r truth-plot, fig.cap="True parameter values for different threshold values"}
+if(nrow(shift_results) > 0) {
+  # Get unique alpha values for x-axis
+  alpha_vals <- unique(shift_results$Alpha)
+  
+  ggplot(shift_results, aes(x = Alpha, y = Mean_Truth, color = Policy)) +
+    geom_line(size = 1.2, alpha = 0.8) +
+    geom_point(size = 3) +
+    scale_x_log10(
+      breaks = alpha_vals[alpha_vals > 0],
+      labels = format(alpha_vals[alpha_vals > 0], scientific = FALSE)
+    ) +
+    labs(
+      title = "True Parameter Values vs. Threshold α",
+      subtitle = "How the causal parameter changes with shift intensity",
+      x = "Threshold α (log scale)",
+      y = "True Parameter Value",
+      color = "Policy Type"
+    ) +
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold"),
+      plot.subtitle = element_text(hjust = 0.5, color = "gray60"),
+      legend.position = "bottom"
+    ) +
+    scale_color_manual(values = c("Simple Shift" = "#E74C3C", "Mark-Maya" = "#3498DB"))
+} else {
+  cat("No shift results available for plotting.\n")
+}
+```
+
+## Estimates vs. Truth Comparison
+
+```{r estimates-vs-truth, fig.cap="Comparison of estimates and true values"}
+if(nrow(shift_results) > 0) {
+  # Prepare data for comparison
+  comparison_data <- shift_results %>%
+    select(Method, Policy, Alpha, Mean_Estimate, Mean_Truth) %>%
+    pivot_longer(cols = c(Mean_Estimate, Mean_Truth), 
+                 names_to = "Type", 
+                 values_to = "Value") %>%
+    mutate(Type = recode(Type, 
+                         "Mean_Estimate" = "Estimate",
+                         "Mean_Truth" = "Truth"))
+  
+  alpha_vals <- unique(shift_results$Alpha)
+  
+  ggplot(comparison_data, aes(x = Alpha, y = Value, color = Policy, linetype = Type)) +
+    geom_line(size = 1, alpha = 0.8) +
+    geom_point(size = 2, aes(shape = Type)) +
+    scale_x_log10(
+      breaks = alpha_vals[alpha_vals > 0],
+      labels = format(alpha_vals[alpha_vals > 0], scientific = FALSE)
+    ) +
+    scale_linetype_manual(values = c("Truth" = "solid", "Estimate" = "dashed")) +
+    scale_shape_manual(values = c("Truth" = 16, "Estimate" = 17)) +
+    labs(
+      title = "Estimates vs. Truth Across Threshold Values",
+      subtitle = "Solid lines = Truth, Dashed lines = Estimates",
+      x = "Threshold α (log scale)",
+      y = "Parameter Value"
+    ) +
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold"),
+      plot.subtitle = element_text(hjust = 0.5, color = "gray60"),
+      legend.position = "bottom"
+    ) +
+    scale_color_manual(values = c("Simple Shift" = "#E74C3C", "Mark-Maya" = "#3498DB"))
+}
+```
+
+## Performance Metrics
+
+### Bias Analysis
+
+```{r bias-plot, fig.cap="Bias across threshold values"}
+if(nrow(shift_results) > 0) {
+  alpha_vals <- unique(shift_results$Alpha)
+  
+  ggplot(shift_results, aes(x = Alpha, y = Bias, color = Policy)) +
+    geom_line(size = 1.2, alpha = 0.8) +
+    geom_point(size = 3) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray50", size = 0.8) +
+    scale_x_log10(
+      breaks = alpha_vals[alpha_vals > 0],
+      labels = format(alpha_vals[alpha_vals > 0], scientific = FALSE)
+    ) +
+    labs(
+      title = "Bias vs. Threshold Parameter",
+      subtitle = "Zero bias shown as dashed line",
+      x = "Threshold α (log scale)",
+      y = "Bias",
+      color = "Policy Type"
+    ) +
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold"),
+      plot.subtitle = element_text(hjust = 0.5, color = "gray60"),
+      legend.position = "bottom",
+      axis.text.x = element_text(angle = 45, hjust = 1)
+    ) +
+    scale_color_manual(values = c("Simple Shift" = "#E74C3C", "Mark-Maya" = "#3498DB"))
+}
+```
+
+### Mean Squared Error
+
+```{r mse-plot, fig.cap="MSE performance across thresholds"}
+if(nrow(shift_results) > 0) {
+  alpha_vals <- unique(shift_results$Alpha)
+  
+  ggplot(shift_results, aes(x = Alpha, y = MSE, color = Policy)) +
+    geom_line(size = 1.2, alpha = 0.8) +
+    geom_point(size = 3) +
+    scale_x_log10(
+      breaks = alpha_vals[alpha_vals > 0],
+      labels = format(alpha_vals[alpha_vals > 0], scientific = FALSE)
+    ) +
+    scale_y_continuous(limits = c(0, max(shift_results$MSE) * 1.1)) +
+    labs(
+      title = "Mean Squared Error vs. Threshold",
+      subtitle = "Lower values indicate better performance",
+      x = "Threshold α (log scale)",
+      y = "MSE",
+      color = "Policy Type"
+    ) +
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold"),
+      plot.subtitle = element_text(hjust = 0.5, color = "gray60"),
+      legend.position = "bottom",
+      axis.text.x = element_text(angle = 45, hjust = 1)
+    ) +
+    scale_color_manual(values = c("Simple Shift" = "#E74C3C", "Mark-Maya" = "#3498DB"))
+}
+```
+
+### Coverage Probability
+
+```{r coverage-plot, fig.cap="Coverage probability assessment"}
+if(nrow(shift_results) > 0) {
+  alpha_vals <- unique(shift_results$Alpha)
+  
+  ggplot(shift_results, aes(x = Alpha, y = Coverage, color = Policy)) +
+    geom_line(size = 1.2, alpha = 0.8) +
+    geom_point(size = 3) +
+    geom_hline(yintercept = 0.95, linetype = "dashed", color = "darkgreen", size = 1) +
+    annotate("text", x = max(shift_results$Alpha)*0.3, y = 0.97, 
+             label = "Nominal 95% Coverage", 
+             color = "darkgreen", size = 3) +
+    scale_x_log10(
+      breaks = alpha_vals[alpha_vals > 0],
+      labels = format(alpha_vals[alpha_vals > 0], scientific = FALSE)
+    ) +
+    scale_y_continuous(limits = c(0, 1.05), breaks = seq(0, 1, 0.2)) +
+    labs(
+      title = "Coverage Probability vs. Threshold",
+      subtitle = "Target: 95% coverage (green dashed line)",
+      x = "Threshold α (log scale)",
+      y = "Coverage Probability",
+      color = "Policy Type"
+    ) +
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold"),
+      plot.subtitle = element_text(hjust = 0.5, color = "gray60"),
+      legend.position = "bottom",
+      axis.text.x = element_text(angle = 45, hjust = 1)
+    ) +
+    scale_color_manual(values = c("Simple Shift" = "#E74C3C", "Mark-Maya" = "#3498DB"))
+}
+```
+
+### Standard Error Analysis
+
+```{r se-ratio-plot, fig.cap="Standard error ratio analysis"}
+if(nrow(shift_results) > 0) {
+  se_comparison <- shift_results %>%
+    mutate(SE_Ratio = Mean_SE / Empirical_SE)
+  
+  alpha_vals <- unique(shift_results$Alpha)
+  
+  ggplot(se_comparison, aes(x = Alpha, y = SE_Ratio, color = Policy)) +
+    geom_line(size = 1.2, alpha = 0.8) +
+    geom_point(size = 3) +
+    geom_hline(yintercept = 1, linetype = "dashed", color = "black", size = 0.8) +
+    annotate("text", x = max(shift_results$Alpha)*0.3, y = 1.05, 
+             label = "Ideal Ratio = 1", 
+             color = "black", size = 3) +
+    scale_x_log10(
+      breaks = alpha_vals[alpha_vals > 0],
+      labels = format(alpha_vals[alpha_vals > 0], scientific = FALSE)
+    ) +
+    labs(
+      title = "Standard Error Ratio: IC-based SE / Empirical SE",
+      subtitle = "Values near 1.0 indicate accurate variance estimation",
+      x = "Threshold α (log scale)",
+      y = "SE Ratio",
+      color = "Policy Type"
+    ) +
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold"),
+      plot.subtitle = element_text(hjust = 0.5, color = "gray60"),
+      legend.position = "bottom",
+      axis.text.x = element_text(angle = 45, hjust = 1)
+    ) +
+    scale_color_manual(values = c("Simple Shift" = "#E74C3C", "Mark-Maya" = "#3498DB"))
+}
+```
+
+## Combined Performance Dashboard
+
+```{r combined-plots, fig.height=12, fig.width=14, fig.cap="Combined performance metrics"}
+if(nrow(shift_results) > 0) {
+  # Prepare SE comparison data
+  se_comparison <- shift_results %>%
+    mutate(SE_Ratio = Mean_SE / Empirical_SE)
+  
+  # Prepare comparison data
+  comparison_data <- shift_results %>%
+    select(Method, Policy, Alpha, Mean_Estimate, Mean_Truth) %>%
+    pivot_longer(cols = c(Mean_Estimate, Mean_Truth), 
+                 names_to = "Type", 
+                 values_to = "Value") %>%
+    mutate(Type = recode(Type, 
+                         "Mean_Estimate" = "Estimate",
+                         "Mean_Truth" = "Truth"))
+  
+  alpha_vals <- unique(shift_results$Alpha)
+  breaks_to_use <- alpha_vals[alpha_vals > 0 & alpha_vals %in% c(0.001, 0.01, 0.1, 1)]
+  if(length(breaks_to_use) == 0) breaks_to_use <- alpha_vals[alpha_vals > 0]
+  
+  # Create individual plots
+  p_truth <- ggplot(shift_results, aes(x = Alpha, y = Mean_Truth, color = Policy)) +
+    geom_line(size = 1, alpha = 0.8) +
+    geom_point(size = 2) +
+    scale_x_log10(breaks = breaks_to_use) +
+    labs(title = "Truth", x = "Threshold α", y = "True Value") +
+    theme(legend.position = "bottom", 
+          plot.title = element_text(size = 11, face = "bold"),
+          axis.text.x = element_text(angle = 45, hjust = 1)) +
+    scale_color_manual(values = c("Simple Shift" = "#E74C3C", "Mark-Maya" = "#3498DB"))
+  
+  p_bias <- ggplot(shift_results, aes(x = Alpha, y = Bias, color = Policy)) +
+    geom_line(size = 1, alpha = 0.8) +
+    geom_point(size = 2) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray50", size = 0.6) +
+    scale_x_log10(breaks = breaks_to_use) +
+    labs(title = "Bias", x = "Threshold α", y = "Bias") +
+    theme(legend.position = "bottom", 
+          plot.title = element_text(size = 11, face = "bold"),
+          axis.text.x = element_text(angle = 45, hjust = 1)) +
+    scale_color_manual(values = c("Simple Shift" = "#E74C3C", "Mark-Maya" = "#3498DB"))
+  
+  p_mse <- ggplot(shift_results, aes(x = Alpha, y = MSE, color = Policy)) +
+    geom_line(size = 1, alpha = 0.8) +
+    geom_point(size = 2) +
+    scale_x_log10(breaks = breaks_to_use) +
+    labs(title = "MSE", x = "Threshold α", y = "MSE") +
+    theme(legend.position = "bottom", 
+          plot.title = element_text(size = 11, face = "bold"),
+          axis.text.x = element_text(angle = 45, hjust = 1)) +
+    scale_color_manual(values = c("Simple Shift" = "#E74C3C", "Mark-Maya" = "#3498DB"))
+  
+  p_coverage <- ggplot(shift_results, aes(x = Alpha, y = Coverage, color = Policy)) +
+    geom_line(size = 1, alpha = 0.8) +
+    geom_point(size = 2) +
+    geom_hline(yintercept = 0.95, linetype = "dashed", color = "darkgreen", size = 0.6) +
+    scale_x_log10(breaks = breaks_to_use) +
+    scale_y_continuous(limits = c(0, 1.05)) +
+    labs(title = "Coverage", x = "Threshold α", y = "Coverage") +
+    theme(legend.position = "bottom", 
+          plot.title = element_text(size = 11, face = "bold"),
+          axis.text.x = element_text(angle = 45, hjust = 1)) +
+    scale_color_manual(values = c("Simple Shift" = "#E74C3C", "Mark-Maya" = "#3498DB"))
+  
+  p_se_ratio <- ggplot(se_comparison, aes(x = Alpha, y = SE_Ratio, color = Policy)) +
+    geom_line(size = 1, alpha = 0.8) +
+    geom_point(size = 2) +
+    geom_hline(yintercept = 1, linetype = "dashed", color = "black", size = 0.6) +
+    scale_x_log10(breaks = breaks_to_use) +
+    labs(title = "SE Ratio", x = "Threshold α", y = "SE Ratio") +
+    theme(legend.position = "bottom", 
+          plot.title = element_text(size = 11, face = "bold"),
+          axis.text.x = element_text(angle = 45, hjust = 1)) +
+    scale_color_manual(values = c("Simple Shift" = "#E74C3C", "Mark-Maya" = "#3498DB"))
+  
+  p_comparison <- ggplot(comparison_data, aes(x = Alpha, y = Value, color = Policy, linetype = Type)) +
+    geom_line(size = 1, alpha = 0.8) +
+    scale_x_log10(breaks = breaks_to_use) +
+    scale_linetype_manual(values = c("Truth" = "solid", "Estimate" = "dashed")) +
+    labs(title = "Estimate vs Truth", x = "Threshold α", y = "Value") +
+    theme(legend.position = "bottom", 
+          plot.title = element_text(size = 11, face = "bold"),
+          axis.text.x = element_text(angle = 45, hjust = 1)) +
+    scale_color_manual(values = c("Simple Shift" = "#E74C3C", "Mark-Maya" = "#3498DB"))
+  
+  # Arrange in grid
+  grid.arrange(p_truth, p_comparison, p_bias, p_mse, p_coverage, p_se_ratio,
+               ncol = 2, nrow = 3,
+               top = "TMLE Performance Metrics Dashboard")
+}
+```
+
+# Performance Summary Tables
+
+## Best Performers by Metric
+
+```{r best-performers}
+if(nrow(shift_results) > 0) {
+  # Best bias performance
+  best_bias <- shift_results %>% 
+    arrange(abs(Bias)) %>% 
+    slice(1:3) %>%
+    select(Method, Policy, Alpha, Bias)
+  
+  # Best MSE performance
+  best_mse <- shift_results %>% 
+    arrange(MSE) %>% 
+    slice(1:3) %>%
+    select(Method, Policy, Alpha, MSE)
+  
+  # Best coverage performance
+  best_coverage <- shift_results %>% 
+    mutate(Coverage_Distance = abs(Coverage - 0.95)) %>%
+    arrange(Coverage_Distance) %>% 
+    slice(1:3) %>%
+    select(Method, Policy, Alpha, Coverage)
+  
+  # Display tables side by side using kable
+  cat("\n### Best Bias Performance\n")
+  kable(best_bias, digits = 4, format = "html") %>%
+    kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) %>%
+    print()
+  
+  cat("\n### Best MSE Performance\n")
+  kable(best_mse, digits = 4, format = "html") %>%
+    kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) %>%
+    print()
+  
+  cat("\n### Best Coverage Performance (Closest to 95%)\n")
+  kable(best_coverage, digits = 4, format = "html") %>%
+    kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) %>%
+    print()
+}
+```
+
+## Standard Error Analysis by Policy
+
+```{r se-analysis}
+se_analysis <- results %>%
+  filter(!is.na(Mean_SE) & !is.na(Empirical_SE)) %>%
+  mutate(SE_Ratio = Mean_SE / Empirical_SE) %>%
+  group_by(Policy) %>%
+  summarise(
+    `Mean SE Ratio` = mean(SE_Ratio, na.rm = TRUE),
+    `Median SE Ratio` = median(SE_Ratio, na.rm = TRUE),
+    `Min SE Ratio` = min(SE_Ratio, na.rm = TRUE),
+    `Max SE Ratio` = max(SE_Ratio, na.rm = TRUE),
+    `SD SE Ratio` = sd(SE_Ratio, na.rm = TRUE),
+    .groups = 'drop'
+  )
+
+kable(se_analysis, 
+      digits = 3,
+      caption = "Standard Error Ratio Summary by Policy",
+      format = "html") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+# Performance Heatmap
+
+## Composite Performance Score Definition
+
+The overall performance score combines multiple metrics into a single measure:
+
+$\text{Performance Score} = w_1 \cdot \text{Bias Score} + w_2 \cdot \text{MSE Score} + w_3 \cdot \text{Coverage Score}$
+
+where:
+- **Bias Score** = $1 - \frac{|\text{Bias}| - \min(|\text{Bias}|)}{\max(|\text{Bias}|) - \min(|\text{Bias}|)}$ (normalized to [0,1], higher is better)
+- **MSE Score** = $1 - \frac{\text{MSE} - \min(\text{MSE})}{\max(\text{MSE}) - \min(\text{MSE})}$ (normalized to [0,1], higher is better)  
+- **Coverage Score** = Coverage probability (already in [0,1])
+- **Weights**: $w_1 = 0$, $w_2 = 0.5$, $w_3 = 0.5$
+
+A score of 1.0 indicates the best possible performance across all metrics, while 0.0 indicates the worst. The weighting prioritizes coverage slightly more than bias and MSE.
+
+```{r performance-heatmap, fig.height=5, fig.width=10, fig.cap="Overall performance score"}
+if(nrow(shift_results) > 0) {
+  # Calculate composite performance score
+  performance_matrix <- shift_results %>%
+    mutate(
+      Abs_Bias = abs(Bias),
+      # Normalize metrics (0-1 scale, higher is better)
+      Bias_Score = if(max(Abs_Bias) - min(Abs_Bias) > 0) {
+        1 - (Abs_Bias - min(Abs_Bias)) / (max(Abs_Bias) - min(Abs_Bias))
+      } else {
+        1
+      },
+      MSE_Score = if(max(MSE) - min(MSE) > 0) {
+        1 - (MSE - min(MSE)) / (max(MSE) - min(MSE))
+      } else {
+        1
+      },
+      Coverage_Score = Coverage,
+      # Weighted composite score
+      Performance_Score = 0 * Bias_Score + 0.5 * MSE_Score + 0.5 * Coverage_Score,
+      Alpha_Label = factor(sprintf("%.3f", Alpha), 
+                          levels = sprintf("%.3f", sort(unique(Alpha))))
+    )
+  
+  ggplot(performance_matrix, 
+         aes(x = Alpha_Label, y = Policy, fill = Performance_Score)) +
+    geom_tile(color = "white", size = 0.5) +
+    geom_text(aes(label = sprintf("%.2f", Performance_Score)), 
+              color = "white", fontface = "bold", size = 3) +
+    scale_fill_gradient2(
+      low = "#E74C3C", 
+      mid = "#F39C12", 
+      high = "#27AE60",
+      midpoint = 0.5, 
+      limits = c(0, 1),
+      name = "Score"
+    ) +
+    labs(
+      title = "Overall Performance Score (0=worst, 1=best)",
+      subtitle = "Weighted: 30% Bias, 30% MSE, 40% Coverage",
+      x = "Threshold α",
+      y = "Policy Type"
+    ) +
+    theme_minimal(base_size = 11) +
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold"),
+      plot.subtitle = element_text(hjust = 0.5, color = "gray60"),
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      panel.grid = element_blank()
+    )
+}
+```
+
+# Recommendations
+
+```{r recommendations}
+if(nrow(shift_results) > 0) {
+  # Find optimal settings for different objectives
+  best_bias_setting <- shift_results %>%
+    arrange(abs(Bias)) %>%
+    slice(1)
+  
+  best_mse_setting <- shift_results %>%
+    arrange(MSE) %>%
+    slice(1)
+  
+  best_coverage_setting <- shift_results %>%
+    mutate(cov_dist = abs(Coverage - 0.95)) %>%
+    arrange(cov_dist) %>%
+    slice(1)
+  
+  recommendations <- data.frame(
+    Objective = c("Minimize Absolute Bias", 
+                  "Minimize MSE", 
+                  "Achieve 95% Coverage",
+                  "Balance All Metrics"),
+    Policy = c(best_bias_setting$Policy,
+               best_mse_setting$Policy,
+               best_coverage_setting$Policy,
+               "See performance heatmap"),
+    Threshold = c(sprintf("%.3f", best_bias_setting$Alpha),
+                  sprintf("%.3f", best_mse_setting$Alpha),
+                  sprintf("%.3f", best_coverage_setting$Alpha),
+                  "Varies by priority"),
+    Performance = c(sprintf("Bias = %.4f", best_bias_setting$Bias),
+                    sprintf("MSE = %.4f", best_mse_setting$MSE),
+                    sprintf("Coverage = %.3f", best_coverage_setting$Coverage),
+                    "See heatmap above")
+  )
+  
+  kable(recommendations, 
+        caption = "Optimal Settings by Objective",
+        format = "html") %>%
+    kable_styling(bootstrap_options = c("striped", "hover", "bordered"))
+} else {
+  cat("Insufficient data for recommendations.\n")
+}
+```
+
+# Technical Notes
+
+## Simulation Parameters
+
+- **Number of simulations**: `r ifelse(exists("results"), results$N_Valid[1], "Unknown")`
+- **Sample size per simulation**: 500 observations
+- **Time points**: 10
+- **SuperLearner library**: SL.glm, SL.earth, SL.mean
+- **Propensity score bounds**: [0.001, 0.999]
+- **Truth calculation**: Monte Carlo with 50,000 samples
+
+## Methods Implemented
+
+1. **Static Intervention**: All units receive treatment at all time points
+2. **Simple Shift**: Intervention based on cumulative propensity product
+3. **Mark-Maya Shift**: Modified threshold rule with historical consideration
+
+## Key Performance Metrics
+
+- **Bias**: Average difference between estimate and truth
+- **MSE**: Mean squared error combining bias and variance
+- **Coverage**: Proportion of 95% confidence intervals containing truth
+- **SE Ratio**: Ratio of IC-based SE to empirical SE (ideal = 1.0)
+
+---
+
+*Report generated on `r Sys.Date()` from tmle_ltmle_superlearner_summary.csv*
